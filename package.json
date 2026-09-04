@@ -1,0 +1,27 @@
+{
+  "name": "meowsmith",
+  "version": "1.0.0",
+  "description": "A cat that reviews your English while your pi agent works - grammar fixes, native phrasing, zero added latency",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "english",
+    "grammar",
+    "esl",
+    "writing",
+    "cat"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/literaryno4/meowsmith.git"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}
