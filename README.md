@@ -77,6 +77,7 @@ bundles everything the extension needs.
 |---|---|
 | `/meowsmith` | toggle the cat on/off |
 | `/meowsmith-style` | pick a visual style: `cat` (default), `minimal`, `card`, `box`, `diff` |
+| `/meowsmith-model` | pick the checker model interactively, or `/meowsmith-model provider/model-id`; `default` follows your session model |
 | `/meowsmith-debug` | toggle per-prompt diagnostics (see *why* the cat stayed quiet) |
 
 ## Configuration
@@ -95,11 +96,15 @@ export PI_MEOWSMITH_STYLE="cat"
 export PI_MEOWSMITH_REASONING="low"
 ```
 
-Your chosen style is persisted to `~/.pi/meowsmith.json`.
+Your chosen style and checker model are persisted to `~/.pi/agent/meowsmith.json`
+(older versions used `~/.pi/meowsmith.json`, which is still read as a fallback).
 
-**Checker model:** by default meowsmith reuses your current session model. Any model
-your pi setup can authenticate with works — a small fast model (Haiku-class) is plenty,
-since the checker only sees your prompt text and returns compact JSON.
+**Checker model:** by default meowsmith reuses your current session model. Pick a
+fixed one with `/meowsmith-model` (saved, survives restarts) or the env var below.
+Resolution order: saved `/meowsmith-model` choice → `PI_MEOWSMITH_MODEL` → session
+model. Any model your pi setup can authenticate with works — a small fast model
+(Haiku- or flash-class) is plenty, since the checker only sees your prompt text and
+returns compact JSON.
 
 **Progressive display:** feedback streams into the cat bubble as it arrives —
 the polished sentence types out live, and the full feedback frame appears when

@@ -13,7 +13,13 @@
  * Commands:
  *   /meowsmith         toggle on/off
  *   /meowsmith-style   pick a visual style (cat | minimal | card | box | diff)
+ *   /meowsmith-model   pick the coach model (default: your session model)
  *   /meowsmith-debug   toggle debug notifications (why a prompt was skipped)
+ *
+ * Coach model resolution order:
+ *   1. /meowsmith-model choice (saved in ~/.pi/agent/meowsmith.json)
+ *   2. PI_MEOWSMITH_MODEL env override ("provider/model-id")
+ *   3. your current session model (the real task's model)
  *
  * Environment overrides:
  *   PI_MEOWSMITH_MODEL  checker model as "provider/model-id"
@@ -21,6 +27,7 @@
  *   PI_MEOWSMITH_STYLE  default style if no saved choice exists
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -36,7 +43,11 @@ import {
 } from "./styles.ts";
 
 const WIDGET_ID = "meowsmith";
-const CONFIG_FILE = join(
+// Canonical per-user config lives in pi's agent dir (e.g. ~/.pi/agent/).
+// Versions ≤1.1.2 wrote to ~/.pi/ — still read that as a fallback so saved
+// styles and models survive the upgrade.
+const CONFIG_FILE = join(getAgentDir(), "meowsmith.json");
+const LEGACY_CONFIG_FILE = join(
 	process.env.PI_CONFIG_DIR ?? join(process.env.HOME ?? "", ".pi"),
 	"meowsmith.json",
 );
@@ -53,6 +64,40 @@ Reply with ONLY compact JSON (no markdown fences, no commentary):
 - "upgrades": 1-3 words or short phrases that are correct but not what a native speaker would naturally choose here (e.g. "make a test" -> "run a test", "I want that you fix" -> "I'd like you to fix"). Only include when clearly more natural; "from" = original fragment, "to" = natural replacement. [] if none.
 - "native": if the overall phrasing sounds translated or unnatural, a full rewrite of the whole prompt the way a native English-speaking developer would actually ask for this. Same meaning, do NOT answer the prompt. "" if the corrected version already sounds native.
 - If everything is already correct and natural: {"corrected":"","issues":[],"upgrades":[],"native":""}`;
+
+interface MeowConfig {
+	style?: Style;
+	/** Coach model as "provider/model-id". Absent = follow the session model. */
+	model?: string;
+}
+
+function loadConfig(): MeowConfig {
+	for (const file of [CONFIG_FILE, LEGACY_CONFIG_FILE]) {
+		try {
+			if (existsSync(file)) {
+				const parsed = JSON.parse(readFileSync(file, "utf8")) as MeowConfig;
+				if (parsed && typeof parsed === "object") return parsed;
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+	return {};
+}
+
+/** Merge `update` into the config file; `undefined` values delete the key. */
+function saveConfig(update: MeowConfig) {
+	try {
+		const merged: MeowConfig = { ...loadConfig() };
+		for (const [key, value] of Object.entries(update)) {
+			if (value === undefined) delete merged[key as keyof MeowConfig];
+			else merged[key as keyof MeowConfig] = value;
+		}
+		writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2) + "\n");
+	} catch {
+		/* ignore */
+	}
+}
 
 function shouldCheck(text: string): boolean {
 	if (!text) return false;
@@ -90,7 +135,7 @@ function saveStyle(style: Style) {
 
 export default function (pi: ExtensionAPI) {
 	let enabled = true;
-	let style: Style = loadStyle();
+	let style: Style = loadConfig().style ?? "box";
 	let checkId = 0;
 	let debug = false; // /meowsmith-debug toggles per-prompt diagnostics
 	// Cat animation state, shared across handlers so agent events can wake
@@ -116,15 +161,29 @@ export default function (pi: ExtensionAPI) {
 		}, CAT_SPEED);
 	};
 
+	/** Saved /meowsmith-model choice: "provider/id", or undefined = session model. */
+	let coachModel: string | undefined = loadConfig().model;
+	const parseModelSpec = (spec: string) => {
+		const [provider, ...rest] = spec.split(/[/,]/);
+		return { provider, id: rest.join("/") };
+	};
+
+	// Coach model priority: /meowsmith-model choice → PI_MEOWSMITH_MODEL env →
+	// the session model. Invalid/unauthenticated specs fall through silently
+	// (debug mode explains) so the cat never dies because a model vanished.
 	const resolveModel = (ctx: Parameters<Parameters<typeof pi.on>[1]>[1]) => {
+		const candidates: Array<{ spec: string; source: string }> = [];
+		if (coachModel) candidates.push({ spec: coachModel, source: coachModel });
 		const override = process.env.PI_MEOWSMITH_MODEL;
-		if (override) {
-			const [provider, ...rest] = override.split(/[/,]/);
-			const id = rest.join("/");
+		if (override) candidates.push({ spec: override, source: override });
+		for (const { spec, source } of candidates) {
+			const { provider, id } = parseModelSpec(spec);
 			const model = ctx.modelRegistry.find(provider, id);
-			if (model && ctx.modelRegistry.hasConfiguredAuth(model)) return model;
+			if (model && ctx.modelRegistry.hasConfiguredAuth(model)) return { model, source };
+			if (debug) ctx.ui.notify(`meowsmith: coach model ${spec} unavailable — falling back`, "info");
 		}
-		return ctx.model ?? undefined;
+		if (ctx.model) return { model: ctx.model, source: "session model" };
+		return undefined;
 	};
 
 	// The cat widget renders from shared state so it can appear instantly as
@@ -230,15 +289,17 @@ export default function (pi: ExtensionAPI) {
 			if (debug) ctx.ui.notify(`meowsmith: skipped (heuristic filter, len=${text.length})`, "info");
 			return;
 		}
-		const model = resolveModel(ctx);
-		if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) {
+		const resolved = resolveModel(ctx);
+		if (!resolved) {
 			if (debug) ctx.ui.notify("meowsmith: skipped (no model or no auth)", "info");
 			return;
 		}
+		const model = resolved.model;
 		// Wake the cat immediately — the "reading your prompt…" bubble mounts
 		// in the same tick as the real task, then swaps when the coach answers.
 		startChecking(ctx);
-		if (debug) ctx.ui.notify(`meowsmith: checking with ${model.id ?? model.provider ?? "model"}…`, "info");
+		if (debug)
+			ctx.ui.notify(`meowsmith: checking with ${resolved.source} (${model.id})…`, "info");
 
 		const id = ++checkId;
 
@@ -389,15 +450,57 @@ export default function (pi: ExtensionAPI) {
 			const arg = (args ?? "").trim().toLowerCase() as Style;
 			if (arg && (STYLES as string[]).includes(arg)) {
 				style = arg;
-				saveStyle(style);
+				saveConfig({ style });
 				ctx.ui.notify(`meowsmith style: ${style}`, "info");
 				return;
 			}
 			const picked = await ctx.ui.select("Meowsmith style:", STYLES);
 			if (picked) {
 				style = picked as Style;
-				saveStyle(style);
+				saveConfig({ style });
 				ctx.ui.notify(`meowsmith style: ${style}`, "info");
+			}
+		},
+	});
+
+	pi.registerCommand("meowsmith-model", {
+		description: "Pick the meowsmith coach model (default: your session model)",
+		handler: async (args, ctx) => {
+			const apply = (spec: string | undefined) => {
+				coachModel = spec;
+				saveConfig({ model: spec }); // undefined deletes the saved key
+				ctx.ui.notify(`meowsmith coach model: ${spec ?? "session model (default)"}`, "info");
+			};
+
+			// /meowsmith-model provider/model-id | default
+			const arg = (args ?? "").trim();
+			if (arg) {
+				if (arg === "default" || arg === "session") {
+					apply(undefined);
+					return;
+				}
+				const { provider, id } = parseModelSpec(arg);
+				const model = ctx.modelRegistry.find(provider, id);
+				if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) {
+					ctx.ui.notify(`meowsmith: ${arg} is unavailable or not authenticated`, "warning");
+					return;
+				}
+				apply(arg);
+				return;
+			}
+
+			// No args → interactive picker over every model with configured auth.
+			const available = [...new Set(ctx.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`))].sort();
+			const sessionSpec = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+			const options = ["session model (default)", ...available];
+			const title = `Meowsmith coach model (current: ${coachModel ?? sessionSpec ?? "session default"}):`;
+			const picked = await ctx.ui.select(title, options);
+			if (!picked) return; // cancelled
+			if (picked === "session model (default)") {
+				apply(undefined);
+			} else {
+				const { provider, id } = parseModelSpec(picked);
+				apply(ctx.modelRegistry.find(provider, id) ? picked : undefined);
 			}
 		},
 	});
