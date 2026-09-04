@@ -1,5 +1,8 @@
 # 🐾 meowsmith
 
+[![npm](https://img.shields.io/npm/v/meowsmith)](https://www.npmjs.com/package/meowsmith)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **A cat that reviews your English while your [pi](https://pi.dev) agent works.**
 
 meowsmith is a pi coding-agent extension for non-native English speakers. Every time you
@@ -41,7 +44,13 @@ plain correction, so it works robustly across models.
 
 ## Install
 
-### With pi's package manager
+**From npm** (also listed in the [pi package gallery](https://pi.dev/packages)):
+
+```bash
+pi install npm:meowsmith
+```
+
+**From git:**
 
 ```bash
 pi install git:github.com/literaryno4/meowsmith
@@ -112,4 +121,4 @@ A wordsmith that says meow. 🐾
 
 ## License
 
-[MIT](LICENSE) © literaryno4
+[MIT](LICENSE) © literaryno4 · also on [npm](https://www.npmjs.com/package/meowsmith)
