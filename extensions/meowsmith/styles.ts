@@ -234,6 +234,48 @@ function renderCat(fb: Feedback, fg: Fg, width: number): string[] {
 	return renderCatFrame(fb, fg, width, 0, "done");
 }
 
+/**
+ * Placeholder bubble shown the instant a task starts, before the coach's
+ * response arrives — so the cat appears as soon as the real task does.
+ */
+export function renderCatChecking(
+	fg: Fg,
+	width: number,
+	frame: number,
+	mode: "working" | "done",
+	text: string,
+): string[] {
+	const catW = 10;
+	if (width < catW + 22) return [];
+
+	const cat = catArt(false, frame, mode);
+	const content: Row[] = [{ text, color: "muted" }];
+	while (content.length < 3) content.push({ text: "", color: null });
+
+	const bubbleW = width - catW;
+	const innerW = bubbleW - 4;
+	const label = text.startsWith("all good") ? "all good" : "reading your prompt";
+	const fullTitle = " \ud83d\udc3e meowsmith \u00b7 " + label + " ";
+	const shortTitle = " \ud83d\udc3e meowsmith ";
+	const title = bubbleW >= dispWidth(fullTitle) + 6 ? fullTitle : shortTitle;
+	const top = "\u256d\u2500" + title + "\u2500".repeat(Math.max(0, bubbleW - dispWidth(title) - 3)) + "\u256e";
+	const bottom = "\u2570" + "\u2500".repeat(bubbleW - 2) + "\u256f";
+	const blankPrefix = " ".repeat(catW);
+	const row = (r: Row) => {
+		const text = r.text.length > innerW ? r.text.slice(0, innerW) : r.text;
+		const pad = " ".repeat(innerW - text.length);
+		return fg("borderMuted", "\u2502 ") + (r.color ? fg(r.color, text) : text) + pad + fg("borderMuted", " \u2502");
+	};
+
+	const lines: string[] = [blankPrefix + fg("borderMuted", top)];
+	content.forEach((r, i) => {
+		const prefix = i < 3 ? cat[i] : blankPrefix;
+		lines.push(prefix + row(r));
+	});
+	lines.push(blankPrefix + fg("borderMuted", bottom));
+	return lines;
+}
+
 function renderDiff(fb: Feedback, fg: Fg, width: number): string[] {
 	const lines: string[] = [];
 	const bullets = fixBullets(fb, 4);

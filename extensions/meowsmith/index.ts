@@ -31,6 +31,7 @@ import {
 	STYLES,
 	isQuiet,
 	parseFeedback,
+	renderCatChecking,
 	renderCatFrame,
 } from "./styles.ts";
 
@@ -126,12 +127,66 @@ export default function (pi: ExtensionAPI) {
 		return ctx.model ?? undefined;
 	};
 
+	// The cat widget renders from shared state so it can appear instantly as
+	// a "reading your prompt…" placeholder and swap to real feedback later.
+	// quietText: shown when the coach found nothing to fix (cat stays, no nag).
+	let checking = true;
+	let quietText = false;
+	let currentFb: Feedback | null = null;
+
+	const mountCatWidget = (
+		ctx: Parameters<Parameters<typeof pi.on>[1]>[1],
+	) => {
+		ctx.ui.setWidget(
+			WIDGET_ID,
+			(tui, theme) => {
+				catTui = tui;
+				return {
+					render(width: number) {
+						const fg = (color: string, text: string) => theme.fg(color as never, text);
+						if (currentFb) return renderCatFrame(currentFb, fg, width, catFrame, mode);
+						return renderCatChecking(
+							fg,
+							width,
+							catFrame,
+							mode,
+							quietText ? "all good — purrfect as is!" : "reading your prompt\u2026",
+						);
+					},
+					dispose() {
+						catTui = null;
+					},
+				};
+			},
+			{ placement: "aboveEditor" },
+		);
+	};
+
+	// Show the placeholder the instant a run begins — zero perceived latency.
+	const startChecking = (ctx: Parameters<Parameters<typeof pi.on>[1]>[1]) => {
+		mode = "working";
+		catFrame = 0;
+		checking = true;
+		quietText = false;
+		currentFb = null;
+		mountCatWidget(ctx);
+		startCatTimer();
+	};
+
 	const showFeedback = (fb: Feedback, ctx: Parameters<Parameters<typeof pi.on>[1]>[1]) => {
 		if (isQuiet(fb)) {
 			if (debug) ctx.ui.notify("meowsmith: prompt already fine — staying quiet", "info");
+			// Swap the placeholder text instead of removing the widget, so the
+			// cat keeps the user company without nagging about anything.
+			checking = false;
+			quietText = true;
+			if (style === "cat" && enabled) mountCatWidget(ctx);
 			return;
 		}
 		if (debug) ctx.ui.notify("meowsmith: showing feedback", "info");
+		checking = false;
+		quietText = false;
+		currentFb = fb;
 
 		// The cat style is animated: the widget reads the shared mode/frame
 		// state, so agent events can wake the cat or put it to sleep.
@@ -150,24 +205,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		catFrame = 0;
-		ctx.ui.setWidget(
-			WIDGET_ID,
-			(tui, theme) => {
-				catTui = tui;
-				return {
-					render(width: number) {
-						const fg = (color: string, text: string) => theme.fg(color as never, text);
-						return renderCatFrame(fb, fg, width, catFrame, mode);
-					},
-					dispose() {
-						catTui = null;
-					},
-				};
-			},
-			{ placement: "aboveEditor" },
-		);
-
+		mountCatWidget(ctx);
 		// Animate only while a task is running. If the feedback arrives after
 		// the task settled (mode "done"), show the sleeping cat statically —
 		// no timer, it just naps until the next task wakes it.
@@ -192,6 +230,9 @@ export default function (pi: ExtensionAPI) {
 			if (debug) ctx.ui.notify("meowsmith: skipped (no model or no auth)", "info");
 			return;
 		}
+		// Wake the cat immediately — the "reading your prompt…" bubble mounts
+		// in the same tick as the real task, then swaps when the coach answers.
+		startChecking(ctx);
 		if (debug) ctx.ui.notify(`meowsmith: checking with ${model.id ?? model.provider ?? "model"}…`, "info");
 
 		const id = ++checkId;
@@ -230,10 +271,22 @@ export default function (pi: ExtensionAPI) {
 				const fb = parseFeedback(output);
 				if (debug) ctx.ui.notify(`meowsmith: got response (${output.length} chars)`, "info");
 				if (fb) showFeedback(fb, ctx);
-				else if (debug) ctx.ui.notify("meowsmith: could not parse coach response", "info");
+				else {
+					// Coach gave nothing usable — drop the placeholder so it
+					// doesn't hang as "reading your prompt…".
+					checking = false;
+					currentFb = null;
+					ctx.ui.setWidget(WIDGET_ID, undefined);
+					if (debug) ctx.ui.notify("meowsmith: could not parse coach response", "info");
+				}
 			} catch (e) {
 				// Coach failures must never disturb the real task — but in debug
 				// mode surface them so "nothing appeared" is explainable.
+				if (checking) {
+					checking = false;
+					currentFb = null;
+					ctx.ui.setWidget(WIDGET_ID, undefined);
+				}
 				if (debug) ctx.ui.notify(`meowsmith: check failed — ${e instanceof Error ? e.message : String(e)}`, "warning");
 			}
 		})();
