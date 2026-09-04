@@ -258,9 +258,11 @@ export default function (pi: ExtensionAPI) {
 		currentAbort?.abort();
 		const abort = new AbortController();
 		currentAbort = abort;
-		// Also die if the run itself is interrupted.
-		if (ctx.signal.aborted) abort.abort();
-		else ctx.signal.addEventListener("abort", () => abort.abort(), { once: true });
+		// Also die if the run itself is interrupted. NOTE: ctx.signal is
+		// undefined in some pi versions/paths (e.g. before_agent_start on
+		// 0.85.0) — never dereference it unguarded.
+		if (ctx.signal?.aborted) abort.abort();
+		else ctx.signal?.addEventListener("abort", () => abort.abort(), { once: true });
 
 		// Same prompt as a recent check? Answer instantly from cache — the
 		// real task never waits and no provider budget is spent twice.
@@ -278,6 +280,27 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// Fire-and-forget: never block the real task.
+		// Watchdog: no matter what the provider does, the placeholder must
+		// never hang — after 30s drop it and cancel the coach call.
+		const watchdog = setTimeout(() => {
+			abort.abort();
+			if (id === checkId && checking) {
+				checking = false;
+				currentFb = null;
+				try {
+					ctx.ui.setWidget(WIDGET_ID, undefined);
+				} catch {
+					// ctx went stale — the new session owns the widget anyway.
+				}
+			}
+			if (debug) {
+				try {
+					ctx.ui.notify("meowsmith: coach timed out after 30s", "warning");
+				} catch {
+					// stale ctx — nothing to do
+				}
+			}
+		}, 30_000);
 		void (async () => {
 			try {
 				const response = await ctx.modelRegistry.complete(
@@ -301,6 +324,7 @@ export default function (pi: ExtensionAPI) {
 					},
 				);
 				if (id !== checkId) return; // superseded by a newer prompt
+				clearTimeout(watchdog);
 				if (debug) ctx.ui.notify("meowsmith: superseded by newer prompt", "info");
 
 				const output = response.content
@@ -326,12 +350,19 @@ export default function (pi: ExtensionAPI) {
 					if (debug) ctx.ui.notify("meowsmith: could not parse coach response", "info");
 				}
 			} catch (e) {
+				clearTimeout(watchdog);
+				const msg = e instanceof Error ? e.message : String(e);
 				// Aborted = superseded by a newer prompt or the run was interrupted.
 				// The newer check owns the widget — touch nothing, count nothing.
 				if (abort.signal.aborted) {
 					if (debug) ctx.ui.notify("meowsmith: check aborted (superseded or run ended)", "info");
 					return;
 				}
+				// Stale ctx: the session was replaced/reloaded/forked while the
+				// coach was in flight. The new session owns the widget — drop
+				// silently and don't count it as a coach failure. (ctx.ui may
+				// itself be stale here, so no notify.)
+				if (msg.includes("stale")) return;
 				// Repeated failures → brief cooldown, so a struggling provider's
 				// rate budget (shared with the real task) isn't hammered.
 				failStreak++;
