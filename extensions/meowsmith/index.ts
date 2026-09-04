@@ -277,28 +277,40 @@ export default function (pi: ExtensionAPI) {
 		// Fire-and-forget: never block the real task.
 		void (async () => {
 			try {
-				// stream() (instead of complete()) lets the widget show the answer
-				// as it arrives — first words in ~1s instead of waiting for the
-				// whole JSON. The call itself is still fire-and-forget.
-				const es = ctx.modelRegistry.stream(
-					model,
-					{
-						systemPrompt: COACH_SYSTEM,
-						messages: [
-							{
-								role: "user",
-								content: [{ type: "text", text }],
-								timestamp: Date.now(),
-							},
-						],
-					},
-					coachOptions,
-				);
 				let output = "";
+				// Not every pi version exposes modelRegistry.stream() to extensions
+			// (0.85.0 only has complete()). Feature-detect and fall back so the
+			// cat never silently disappears on older pi builds.
+			const registry = ctx.modelRegistry as unknown as {
+				stream?: (
+					model: typeof model,
+					context: unknown,
+					options?: unknown,
+				) => AsyncIterable<{ type: string; delta?: string }>;
+				complete?: (
+					model: typeof model,
+					context: unknown,
+				options?: unknown,
+				) => Promise<{ content: Array<{ type: string; text?: string }> }>;
+			};
+				const coachContext = {
+					systemPrompt: COACH_SYSTEM,
+				messages: [
+					{
+						role: "user",
+						content: [{ type: "text", text }],
+						timestamp: Date.now(),
+					},
+				],
+			};
+				if (typeof registry.stream === "function") {
+					// stream() lets the widget show the answer as it arrives — first
+					// words in ~1s instead of waiting for the whole JSON.
+					const es = registry.stream(model, coachContext, coachOptions);
 				let lastPaint = 0;
 				for await (const ev of es) {
 					if (id !== checkId) break; // superseded by a newer prompt
-					if (ev.type === "text_delta") {
+					if (ev.type === "text_delta" && ev.delta) {
 						output += ev.delta;
 						const now = Date.now();
 						if (now - lastPaint > 100) {
@@ -310,11 +322,18 @@ export default function (pi: ExtensionAPI) {
 						}
 					}
 				}
+				} else {
+					if (debug) ctx.ui.notify("meowsmith: registry has no stream(), using complete()", "info");
+					const response = await registry.complete!(model, coachContext, coachOptions);
+					output = (response.content ?? [])
+						.filter((c): c is { type: "text"; text: string } => c.type === "text")
+						.map((c) => c.text)
+						.join("");
+				}
 				if (id !== checkId) return; // superseded by a newer prompt
-				if (debug) ctx.ui.notify("meowsmith: superseded by newer prompt", "info");
 
 				const fb = parseFeedback(output);
-				if (debug) ctx.ui.notify(`meowsmith: got response (${output.length} chars)`, "info");
+				if (debug) ctx.ui.notify(`meowsmith: got response (${output.length} chars)`, "info");;
 				if (fb) showFeedback(fb, ctx);
 				else {
 					// Coach gave nothing usable — drop the placeholder so it
