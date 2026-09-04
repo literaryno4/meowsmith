@@ -82,29 +82,16 @@ bundles everything the extension needs.
 
 ## Configuration
 
-**Environment variables:**
-
-```bash
-# pin a cheap, fast checker model instead of using your session model
-export PI_MEOWSMITH_MODEL="anthropic/claude-haiku-4-5"
-
-# default style if nothing is saved yet
-export PI_MEOWSMITH_STYLE="cat"
-
-# optional thinking-effort override for the checker call only (never affects
-# the real task). Useful on always-thinking models where "low" is much faster.
-export PI_MEOWSMITH_REASONING="low"
-```
+Everything is configured through pi commands — no environment variables.
 
 Your chosen style and checker model are persisted to `~/.pi/agent/meowsmith.json`
 (older versions used `~/.pi/meowsmith.json`, which is still read as a fallback).
 
 **Checker model:** by default meowsmith reuses your current session model. Pick a
-fixed one with `/meowsmith-model` (saved, survives restarts) or the env var below.
-Resolution order: saved `/meowsmith-model` choice → `PI_MEOWSMITH_MODEL` → session
-model. Any model your pi setup can authenticate with works — a small fast model
-(Haiku- or flash-class) is plenty, since the checker only sees your prompt text and
-returns compact JSON.
+fixed one with `/meowsmith-model` (saved, survives restarts). Resolution order:
+saved `/meowsmith-model` choice → session model. Any model your pi setup can
+authenticate with works — a small fast model (Haiku- or flash-class) is plenty,
+since the checker only sees your prompt text and returns compact JSON.
 
 **Progressive display:** feedback streams into the cat bubble as it arrives —
 the polished sentence types out live, and the full feedback frame appears when
@@ -115,7 +102,7 @@ in the background exactly like the old one-shot call.
 
 Your prompt text is sent to the LLM provider you have already configured in pi for
 the writing check. Nothing else is collected, and no code or files are sent — only
-the prompt text itself. Use `PI_MEOWSMITH_MODEL` if you want the check to go to a
+the prompt text itself. Use `/meowsmith-model` if you want the check to go to a
 different (e.g. local) provider than your main session.
 
 ## Smart filtering

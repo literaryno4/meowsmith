@@ -18,13 +18,7 @@
  *
  * Coach model resolution order:
  *   1. /meowsmith-model choice (saved in ~/.pi/agent/meowsmith.json)
- *   2. PI_MEOWSMITH_MODEL env override ("provider/model-id")
- *   3. your current session model (the real task's model)
- *
- * Environment overrides:
- *   PI_MEOWSMITH_MODEL  checker model as "provider/model-id"
- *                     (defaults to your current session model)
- *   PI_MEOWSMITH_STYLE  default style if no saved choice exists
+ *   2. your current session model (the real task's model)
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -111,28 +105,6 @@ function shouldCheck(text: string): boolean {
 	return true;
 }
 
-function loadStyle(): Style {
-	try {
-		if (existsSync(CONFIG_FILE)) {
-			const saved = JSON.parse(readFileSync(CONFIG_FILE, "utf8")) as { style?: string };
-			if (saved.style && (STYLES as string[]).includes(saved.style)) return saved.style as Style;
-		}
-	} catch {
-		/* ignore */
-	}
-	const env = process.env.PI_MEOWSMITH_STYLE as Style | undefined;
-	if (env && (STYLES as string[]).includes(env)) return env;
-	return "box";
-}
-
-function saveStyle(style: Style) {
-	try {
-		writeFileSync(CONFIG_FILE, JSON.stringify({ style }, null, 2) + "\n");
-	} catch {
-		/* ignore */
-	}
-}
-
 export default function (pi: ExtensionAPI) {
 	let enabled = true;
 	let style: Style = loadConfig().style ?? "box";
@@ -168,19 +140,15 @@ export default function (pi: ExtensionAPI) {
 		return { provider, id: rest.join("/") };
 	};
 
-	// Coach model priority: /meowsmith-model choice → PI_MEOWSMITH_MODEL env →
-	// the session model. Invalid/unauthenticated specs fall through silently
-	// (debug mode explains) so the cat never dies because a model vanished.
+	// Coach model priority: /meowsmith-model choice → the session model.
+	// Invalid/unauthenticated saved specs fall through silently (debug mode
+	// explains) so the cat never dies because a model vanished.
 	const resolveModel = (ctx: Parameters<Parameters<typeof pi.on>[1]>[1]) => {
-		const candidates: Array<{ spec: string; source: string }> = [];
-		if (coachModel) candidates.push({ spec: coachModel, source: coachModel });
-		const override = process.env.PI_MEOWSMITH_MODEL;
-		if (override) candidates.push({ spec: override, source: override });
-		for (const { spec, source } of candidates) {
-			const { provider, id } = parseModelSpec(spec);
+		if (coachModel) {
+			const { provider, id } = parseModelSpec(coachModel);
 			const model = ctx.modelRegistry.find(provider, id);
-			if (model && ctx.modelRegistry.hasConfiguredAuth(model)) return { model, source };
-			if (debug) ctx.ui.notify(`meowsmith: coach model ${spec} unavailable — falling back`, "info");
+			if (model && ctx.modelRegistry.hasConfiguredAuth(model)) return { model, source: coachModel };
+			if (debug) ctx.ui.notify(`meowsmith: coach model ${coachModel} unavailable — falling back`, "info");
 		}
 		if (ctx.model) return { model: ctx.model, source: "session model" };
 		return undefined;
@@ -319,11 +287,6 @@ export default function (pi: ExtensionAPI) {
 			return open ? open[1] : null;
 		};
 
-		// Optional thinking-effort override for the coach call ONLY — the real
-		// task's settings are never touched. Set PI_MEOWSMITH_REASONING to a
-		// level your provider accepts (e.g. "low" for always-thinking models)
-		// to cut coach latency; unset (default) sends nothing, as before.
-		const reasoning = (process.env.PI_MEOWSMITH_REASONING ?? "").trim().toLowerCase();
 		const coachOptions: Record<string, unknown> = {
 			maxTokens: 700,
 			temperature: 0.2,
@@ -331,9 +294,6 @@ export default function (pi: ExtensionAPI) {
 			sessionId: uuidv7(),
 			signal: ctx.signal,
 		};
-		if (["minimal", "low", "medium", "high", "xhigh", "max"].includes(reasoning)) {
-			coachOptions.reasoningEffort = reasoning;
-		}
 
 		// Fire-and-forget: never block the real task.
 		void (async () => {
