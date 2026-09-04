@@ -133,6 +133,18 @@ export default function (pi: ExtensionAPI) {
 	let checking = true;
 	let quietText = false;
 	let currentFb: Feedback | null = null;
+	// Abort handle for the in-flight coach call — superseding a prompt stops
+	// the old request so it stops consuming the provider's rate budget.
+	let currentAbort: AbortController | null = null;
+	// After repeated coach failures, pause checking briefly so a struggling
+	// provider never gets hammered on every prompt (its rate budget is shared
+	// with the real task).
+	let failStreak = 0;
+	let cooldownUntil = 0;
+	// LRU of recent coach results by exact prompt text — retries of the same
+	// prompt get instant feedback with zero extra calls.
+	const coachCache = new Map<string, string>();
+	const COACH_CACHE_MAX = 20;
 
 	const mountCatWidget = (
 		ctx: Parameters<Parameters<typeof pi.on>[1]>[1],
@@ -225,6 +237,10 @@ export default function (pi: ExtensionAPI) {
 			if (debug) ctx.ui.notify(`meowsmith: skipped (heuristic filter, len=${text.length})`, "info");
 			return;
 		}
+		if (Date.now() < cooldownUntil) {
+			if (debug) ctx.ui.notify("meowsmith: cooling down after repeated coach failures", "info");
+			return;
+		}
 		const model = resolveModel(ctx);
 		if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) {
 			if (debug) ctx.ui.notify("meowsmith: skipped (no model or no auth)", "info");
@@ -236,6 +252,30 @@ export default function (pi: ExtensionAPI) {
 		if (debug) ctx.ui.notify(`meowsmith: checking with ${model.id ?? model.provider ?? "model"}…`, "info");
 
 		const id = ++checkId;
+
+		// Stop any in-flight coach call — its result would be discarded anyway,
+		// and every token it generates is budget the real task might want.
+		currentAbort?.abort();
+		const abort = new AbortController();
+		currentAbort = abort;
+		// Also die if the run itself is interrupted.
+		if (ctx.signal.aborted) abort.abort();
+		else ctx.signal.addEventListener("abort", () => abort.abort(), { once: true });
+
+		// Same prompt as a recent check? Answer instantly from cache — the
+		// real task never waits and no provider budget is spent twice.
+		const cached = coachCache.get(text);
+		if (cached !== undefined) {
+			coachCache.delete(text);
+			coachCache.set(text, cached); // LRU refresh
+			const fb = parseFeedback(cached);
+			if (fb) {
+				if (debug) ctx.ui.notify("meowsmith: cache hit — instant feedback", "info");
+				showFeedback(fb, ctx);
+				return;
+			}
+			coachCache.delete(text); // stale junk from an older parse bug
+		}
 
 		// Fire-and-forget: never block the real task.
 		void (async () => {
@@ -253,11 +293,11 @@ export default function (pi: ExtensionAPI) {
 						],
 					},
 					{
-						maxTokens: 700,
+						maxTokens: 400,
 						temperature: 0.2,
 						cacheRetention: "none",
 						sessionId: uuidv7(),
-						signal: ctx.signal,
+						signal: abort.signal,
 					},
 				);
 				if (id !== checkId) return; // superseded by a newer prompt
@@ -270,8 +310,14 @@ export default function (pi: ExtensionAPI) {
 
 				const fb = parseFeedback(output);
 				if (debug) ctx.ui.notify(`meowsmith: got response (${output.length} chars)`, "info");
-				if (fb) showFeedback(fb, ctx);
-				else {
+				if (fb) {
+					failStreak = 0;
+					coachCache.set(text, output);
+					while (coachCache.size > COACH_CACHE_MAX) {
+						coachCache.delete(coachCache.keys().next().value as string);
+					}
+					showFeedback(fb, ctx);
+				} else {
 					// Coach gave nothing usable — drop the placeholder so it
 					// doesn't hang as "reading your prompt…".
 					checking = false;
@@ -280,9 +326,24 @@ export default function (pi: ExtensionAPI) {
 					if (debug) ctx.ui.notify("meowsmith: could not parse coach response", "info");
 				}
 			} catch (e) {
-				// Coach failures must never disturb the real task — but in debug
-				// mode surface them so "nothing appeared" is explainable.
-				if (checking) {
+				// Aborted = superseded by a newer prompt or the run was interrupted.
+				// The newer check owns the widget — touch nothing, count nothing.
+				if (abort.signal.aborted) {
+					if (debug) ctx.ui.notify("meowsmith: check aborted (superseded or run ended)", "info");
+					return;
+				}
+				// Repeated failures → brief cooldown, so a struggling provider's
+				// rate budget (shared with the real task) isn't hammered.
+				failStreak++;
+				if (failStreak >= 2) {
+					cooldownUntil = Date.now() + 5 * 60_000;
+					failStreak = 0;
+					if (debug) ctx.ui.notify("meowsmith: cooling down 5 min after repeated failures", "warning");
+				}
+				// Coach failures must never disturb the real task — only clear the
+				// placeholder if this check is still the current one (a stale
+				// callback must not wipe a newer run's widget).
+				if (id === checkId && checking) {
 					checking = false;
 					currentFb = null;
 					ctx.ui.setWidget(WIDGET_ID, undefined);
@@ -313,6 +374,7 @@ export default function (pi: ExtensionAPI) {
 			enabled = !enabled;
 			if (!enabled) {
 				checkId++; // invalidate any in-flight check
+				currentAbort?.abort(); // and stop it, don't just ignore it
 				ctx.ui.setWidget(WIDGET_ID, undefined);
 			}
 			ctx.ui.notify(`meowsmith ${enabled ? "enabled" : "disabled"}`, "info");
@@ -347,6 +409,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		currentAbort?.abort();
 		ctx.ui.setWidget(WIDGET_ID, undefined);
 	});
 }

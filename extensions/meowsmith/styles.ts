@@ -58,7 +58,9 @@ export function parseFeedback(raw: string): Feedback | undefined {
 		const upgrades = Array.isArray(obj.upgrades)
 			? (obj.upgrades as Record<string, unknown>[])
 					.slice(0, 3)
-					.map((u) => ({ from: s(u?.from), to: s(u?.to) }))
+					// Accept both key spellings — models occasionally drift toward
+					// the before/after shape used for issues.
+					.map((u) => ({ from: s(u?.from ?? u?.before), to: s(u?.to ?? u?.after) }))
 					.filter((u) => u.from && u.to)
 			: [];
 		return { corrected: s(obj.corrected), issues, upgrades, native: s(obj.native) };
@@ -172,19 +174,21 @@ function dispWidth(s: string): number {
 	return w;
 }
 
-/** One frame of the cat speech-bubble widget. */
-export function renderCatFrame(
-	fb: Feedback,
-	fg: Fg,
-	width: number,
-	frame: number,
-	mode: "working" | "done",
-): string[] {
-	const catW = 10; // cat art width (body + tail zone); trailing space is the gap
-	if (width < catW + 22) return renderBox(fb, fg, width); // too narrow for the cat
+/**
+ * Cache of width-dependent bubble parts, keyed by feedback object. The cat
+ * art changes every animation frame, but the wrapped text, borders, and row
+ * strings do not — so the TUI can re-render at any rate for free.
+ */
+interface BubbleCache {
+	width: number;
+	top: string;
+	bottom: string;
+	rows: string[]; // full bubble-row strings, without the cat prefix
+	blankPrefix: string;
+}
+const bubbleCache = new WeakMap<Feedback, BubbleCache>();
 
-	const cat = catArt(fb.issues.length > 0, frame, mode);
-
+function buildBubble(fb: Feedback, fg: Fg, width: number, catW: number): BubbleCache {
 	const content: Row[] = [];
 	for (const l of wrap(bestVersion(fb), width - catW - 5).slice(0, 4)) {
 		content.push({ text: l, color: "text" });
@@ -208,7 +212,7 @@ export function renderCatFrame(
 			: "tiny fixes I spotted";
 	const fullTitle = " \ud83d\udc3e meowsmith \u00b7 " + label + " ";
 	const shortTitle = " \ud83d\udc3e meowsmith ";
-	const title = bubbleW >= fullTitle.length + 6 ? fullTitle : shortTitle;
+	const title = bubbleW >= dispWidth(fullTitle) + 6 ? fullTitle : shortTitle;
 	const top = "\u256d\u2500" + title + "\u2500".repeat(Math.max(0, bubbleW - dispWidth(title) - 3)) + "\u256e";
 	const bottom = "\u2570" + "\u2500".repeat(bubbleW - 2) + "\u256f";
 	const blankPrefix = " ".repeat(catW);
@@ -217,15 +221,35 @@ export function renderCatFrame(
 		const pad = " ".repeat(innerW - text.length);
 		return fg("borderMuted", "\u2502 ") + (r.color ? fg(r.color, text) : text) + pad + fg("borderMuted", " \u2502");
 	};
+	return { width, top, bottom, blankPrefix, rows: content.map(row) };
+}
 
-	const lines: string[] = [blankPrefix + fg("borderMuted", top)];
+/** One frame of the cat speech-bubble widget. */
+export function renderCatFrame(
+	fb: Feedback,
+	fg: Fg,
+	width: number,
+	frame: number,
+	mode: "working" | "done",
+): string[] {
+	const catW = 10; // cat art width (body + tail zone); trailing space is the gap
+	if (width < catW + 22) return renderBox(fb, fg, width); // too narrow for the cat
+
+	const cat = catArt(fb.issues.length > 0, frame, mode);
+
+	let cache = bubbleCache.get(fb);
+	if (!cache || cache.width !== width) {
+		cache = buildBubble(fb, fg, width, catW);
+		bubbleCache.set(fb, cache);
+	}
+
+	const lines: string[] = [cache.blankPrefix + cache.top];
 	// Cat rows hook onto the first three content rows, like the cat is peeking
 	// over the bubble's left edge.
-	content.forEach((r, i) => {
-		const prefix = i < 3 ? cat[i] : blankPrefix;
-		lines.push(prefix + row(r));
+	cache.rows.forEach((r, i) => {
+		lines.push((i < 3 ? cat[i] : cache.blankPrefix) + r);
 	});
-	lines.push(blankPrefix + fg("borderMuted", bottom));
+	lines.push(cache.blankPrefix + cache.bottom);
 	return lines;
 }
 
