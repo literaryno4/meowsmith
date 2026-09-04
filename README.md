@@ -89,6 +89,10 @@ export PI_MEOWSMITH_MODEL="anthropic/claude-haiku-4-5"
 
 # default style if nothing is saved yet
 export PI_MEOWSMITH_STYLE="cat"
+
+# optional thinking-effort override for the checker call only (never affects
+# the real task). Useful on always-thinking models where "low" is much faster.
+export PI_MEOWSMITH_REASONING="low"
 ```
 
 Your chosen style is persisted to `~/.pi/meowsmith.json`.
@@ -96,6 +100,11 @@ Your chosen style is persisted to `~/.pi/meowsmith.json`.
 **Checker model:** by default meowsmith reuses your current session model. Any model
 your pi setup can authenticate with works — a small fast model (Haiku-class) is plenty,
 since the checker only sees your prompt text and returns compact JSON.
+
+**Progressive display:** feedback streams into the cat bubble as it arrives —
+the polished sentence types out live, and the full feedback frame appears when
+the coach finishes. The real task is never waited on; the stream is consumed
+in the background exactly like the old one-shot call.
 
 ## Privacy
 

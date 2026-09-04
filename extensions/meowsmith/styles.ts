@@ -174,6 +174,7 @@ function dispWidth(s: string): number {
 	return w;
 }
 
+/** One frame of the cat speech-bubble widget. */
 /**
  * Cache of width-dependent bubble parts, keyed by feedback object. The cat
  * art changes every animation frame, but the wrapped text, borders, and row
@@ -212,6 +213,7 @@ function buildBubble(fb: Feedback, fg: Fg, width: number, catW: number): BubbleC
 			: "tiny fixes I spotted";
 	const fullTitle = " \ud83d\udc3e meowsmith \u00b7 " + label + " ";
 	const shortTitle = " \ud83d\udc3e meowsmith ";
+	// Display-width compare (🐾 is wide) so the border never misaligns.
 	const title = bubbleW >= dispWidth(fullTitle) + 6 ? fullTitle : shortTitle;
 	const top = "\u256d\u2500" + title + "\u2500".repeat(Math.max(0, bubbleW - dispWidth(title) - 3)) + "\u256e";
 	const bottom = "\u2570" + "\u2500".repeat(bubbleW - 2) + "\u256f";
@@ -243,13 +245,13 @@ export function renderCatFrame(
 		bubbleCache.set(fb, cache);
 	}
 
-	const lines: string[] = [cache.blankPrefix + cache.top];
+	const lines: string[] = [cache.blankPrefix + fg("borderMuted", cache.top)];
 	// Cat rows hook onto the first three content rows, like the cat is peeking
 	// over the bubble's left edge.
 	cache.rows.forEach((r, i) => {
 		lines.push((i < 3 ? cat[i] : cache.blankPrefix) + r);
 	});
-	lines.push(cache.blankPrefix + cache.bottom);
+	lines.push(cache.blankPrefix + fg("borderMuted", cache.bottom));
 	return lines;
 }
 
